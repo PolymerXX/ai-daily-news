@@ -96,26 +96,28 @@ def create_model() -> OpenAIModel:
 async def jina_scrape(url: str, timeout: int = 30) -> str:
     """Scrape a URL using Jina Reader API and return markdown content.
 
-    Falls back to Firecrawl if Jina fails and Firecrawl key is available.
+    Jina free tier works without a key. If JINA_API_KEY is set, it's sent
+    for higher rate limits. Falls back to Firecrawl if Jina fails.
     """
-    # Try Jina Reader first
-    if JINA_API_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.get(
-                    f"https://r.jina.ai/{url}",
-                    headers={
-                        "Authorization": f"Bearer {JINA_API_KEY}",
-                        "X-Return-Format": "markdown",
-                        "X-No-Cache": "true",
-                    },
-                )
-                resp.raise_for_status()
-                text = resp.text.strip()
-                if text and len(text) > 50:
-                    return text
-        except Exception as e:
-            print(f"[jina] scrape failed for {url}: {e}")
+    # Try Jina Reader (free tier works without key)
+    try:
+        headers = {
+            "X-Return-Format": "markdown",
+            "X-No-Cache": "true",
+        }
+        if JINA_API_KEY:
+            headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(
+                f"https://r.jina.ai/{url}",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            text = resp.text.strip()
+            if text and len(text) > 50:
+                return text
+    except Exception as e:
+        print(f"[jina] scrape failed for {url}: {e}")
 
     # Fallback to Firecrawl
     if FIRECRAWL_API_KEY:
@@ -350,7 +352,7 @@ async def health():
     return {
         "status": "ok",
         "model": DEFAULT_MODEL,
-        "jina": "ready" if JINA_API_KEY else "no-key",
+        "jina": "ready",  # free tier works without key
         "brave": "ready" if BRAVE_API_KEY else "no-key",
         "firecrawl": "fallback" if FIRECRAWL_API_KEY else "none",
         "cached_news": len(_news_cache),
@@ -433,7 +435,7 @@ async def generate_news_internal(today: str) -> dict:
 @app.get("/api/news/smol")
 async def get_smol_news():
     """Get latest AI news from smol.ai RSS feed (parsed into NewsItem format)."""
-    global _smol_cache
+    global _smol_cache, _news_cache, _cache_date
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get("https://news.smol.ai/rss.xml")
@@ -496,6 +498,8 @@ async def get_smol_news():
             item.pop("_timestamp", None)
 
         _smol_cache = [item["title"] for item in items]
+        _news_cache = items
+        _cache_date = date.today().isoformat()
         return {"news": items, "total": len(items), "cached": False}
 
     except Exception as e:
@@ -614,9 +618,13 @@ async def chat(request: dict):
 
     deps = ChatDeps(news_summary=f"今日AI资讯（{_cache_date}）：\n{news_text}{smol_text}")
 
+    # Inject news context into the prompt so the model actually sees it
+    context_block = f"\n\n---\n以下是你掌握的今日AI资讯，回答时请结合这些信息：\n{deps.news_summary}\n---\n\n"
+    full_message = context_block + message
+
     async def event_stream():
         try:
-            async with chat_agent.run_stream(message, deps=deps) as result:
+            async with chat_agent.run_stream(full_message, deps=deps) as result:
                 async for text in result.stream_text(delta=True):
                     yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'done': True})}\n\n"
