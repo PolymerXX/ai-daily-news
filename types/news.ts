@@ -7,6 +7,7 @@ export interface NewsItem {
   category: string;
   highlight: boolean;
   content: string;
+  url?: string;
 }
 
 export type NewsCategory = '大模型' | '芯片' | '政策' | '应用' | '开源';
