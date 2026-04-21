@@ -9,11 +9,13 @@ export function useTheme() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem('ai-news-theme') as Theme | null;
-    if (stored === 'light' || stored === 'dark') {
-      setTheme(stored);
-    }
-    setMounted(true);
+    queueMicrotask(() => {
+      const stored = localStorage.getItem('ai-news-theme') as Theme | null;
+      if (stored === 'light' || stored === 'dark') {
+        setTheme(stored);
+      }
+      setMounted(true);
+    });
   }, []);
 
   useEffect(() => {
